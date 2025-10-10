@@ -3,3 +3,6 @@
 # azure-monitor-opentelemetry
 
 azure-functions
+pydantic>=2.0
+pyyaml
+google-genai
