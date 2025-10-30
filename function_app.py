@@ -49,11 +49,12 @@ def generate_contract(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse(
         body=yaml_text,
         mimetype="text/yaml",
-        headers={**CORS_HEADERS, "Content-Disposition": 'attachment; filename=\"data_contract.yaml\"'},
+        headers={**CORS_HEADERS, "Content-Disposition": 'attachment; filename="data_contract.yaml"'},
         status_code=200,
     )
 
-# ------------------- GEMINI: sugerencias -------------------
+
+# ------------------- GEMINI: suggestions -------------------
 @app.function_name(name="suggest_metadata")
 @app.route(route="suggest_metadata", methods=["OPTIONS", "POST"])
 def suggest_metadata(req: func.HttpRequest) -> func.HttpResponse:
@@ -81,6 +82,16 @@ def suggest_metadata(req: func.HttpRequest) -> func.HttpResponse:
 
     csv_text = (body or {}).get("csv_text", "")
     table_name = (body or {}).get("table_name", "unknown_table")
+    lang = ((body or {}).get("lang", "en") or "en").lower().strip()
+
+    allowed_langs = {"en", "es"}
+    if lang not in allowed_langs:
+        return func.HttpResponse(
+            body=json.dumps({"error": "Unsupported lang. Use 'en' or 'es'."}),
+            mimetype="application/json",
+            headers=CORS_HEADERS,
+            status_code=400,
+        )
 
     if not csv_text.strip():
         return func.HttpResponse(
@@ -90,20 +101,22 @@ def suggest_metadata(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
         )
 
-    # Limitar tamaño para costo/latencia
+    # Limit size for cost/latency
     csv_short = csv_text[: 64 * 1024]
 
-    # Cliente Gemini (SDK nuevo)
+    # Gemini client (new SDK)
     client = genai.Client(api_key=api_key)
 
-    # Construimos un “schema ejemplo” en JSON con json.dumps para evitar problemas de llaves en f-strings
+    # Language-aware instructions
+    lang_name = "English" if lang == "en" else "Spanish"
+    # Example schema structure (keys fixed, content in requested language)
     schema_example = {
         "table_name": table_name,
-        "table_description": "…",
+        "table_description": "...",
         "columns": [
             {
                 "name": "col_name",
-                "description": "…",
+                "description": "...",
                 "suggested_type": "string|int|float|boolean|timestamp|date|email|id|category|currency|json|unknown",
                 "nullable": True,
             }
@@ -111,13 +124,15 @@ def suggest_metadata(req: func.HttpRequest) -> func.HttpResponse:
     }
     schema_json = json.dumps(schema_example, ensure_ascii=False, indent=2)
 
+    # Prompt with language control
     prompt = (
         "You are a data documentation assistant.\n"
+        f"Write ALL natural-language text in {lang_name}.\n"
         "Given a CSV sample, infer:\n"
-        "- a short Spanish description of the table's business meaning,\n"
-        "- for each column, a short Spanish description and a probable semantic type\n"
+        f"- a short {lang_name} description of the table's business meaning,\n"
+        f"- for each column, a short {lang_name} description and a probable semantic type\n"
         '  ("string","int","float","boolean","timestamp","date","email","id","category","currency","json","unknown").\n'
-        "Return valid JSON ONLY with this structure (keys/types as example; replace ellipses):\n\n"
+        "Return VALID JSON ONLY with EXACTLY this structure (keep keys as shown; replace ellipses with content):\n\n"
         f"{schema_json}\n\n"
         "CSV SAMPLE:\n"
         "```csv\n"
@@ -132,6 +147,9 @@ def suggest_metadata(req: func.HttpRequest) -> func.HttpResponse:
             config={"response_mime_type": "application/json"},
         )
         data = json.loads(resp.text)
+        # echo the lang used (useful for the frontend)
+        if isinstance(data, dict):
+            data["lang"] = lang
     except Exception as e:
         logging.exception("Gemini generate/parse error")
         return func.HttpResponse(
